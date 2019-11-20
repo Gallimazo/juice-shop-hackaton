@@ -1,0 +1,127 @@
+#include:
+#  - template: Dependency-Scanning.gitlab-ci.yml
+#  - template: SAST.gitlab-ci.yml
+
+stages:
+  - init
+  - build
+  - build_oci
+  - run_oci
+variables:
+  
+cache:
+  paths:
+    - node_modules/
+    
+.dev_environment: &dev_environment
+  tags:
+    - gce
+    - docker
+    
+  only:
+    - develop
+    - master
+
+job_name:
+  <<: *dev_environment
+  stage: init
+  script:
+    - export
+
+.build:
+  <<: *dev_environment
+  stage: build
+  image: node:latest
+  script:
+    - npm install
+  artifacts:
+    paths:
+      - node_modules/
+      
+.test_with_lab:
+  stage: test
+  script:
+   - npm install
+   - npm test
+   - ./node_modules/@angular/cli/bin/ng test --progress false --single-run=true --watch=false
+
+.build_oci_image:
+  <<: *dev_environment
+  extends: .build_oci_image_pull_registry_kaniko
+  variables:
+    TPL_OCI_IMAGE_NAME: ${CI_PROJECT_PATH}
+    TPL_PUSH_REGISTRY_USER: ${CI_REGISTRY_USER}
+    TPL_PUSH_REGISTRY_PASS: ${CI_REGISTRY_PASSWORD}
+    TPL_PUSH_REGISTRY_NAME: ${CI_REGISTRY}
+    # docker build -t registry.gitlab.com/gallimazo/test_web .
+    # docker push gallimazo/java-example-gitlabci-container:tagname
+    TPL_PULL_REGISTRY_USER: ${REDHAT_REGISTRY_USER}
+    TPL_PULL_REGISTRY_PASS: ${REDHAT_REGISTRY_PASSWORD}
+    TPL_PULL_REGISTRY_NAME: ${REDHAT_REGISTRY_NAME}
+    TPL_CONTEXT_PATH: ${CI_PROJECT_DIR}
+    TPL_EXTRA_OPTS: >
+      --build-arg BUILD_NAME=${CI_PROJECT_NAME}
+      --build-arg BUILD_VERSION=${RELEASE_IMAGE_VERSION}
+      --build-arg BUILD_URL=${CI_PROJECT_URL}
+  stage: build_oci
+  only:
+    - develop 
+    - master
+  
+run_oci_image:
+  <<: *dev_environment
+  image:
+    name: docker:dind
+  variables:
+    TPL_OCI_IMAGE_NAME: ${CI_PROJECT_PATH}
+    TPL_PUSH_REGISTRY_USER: ${CI_REGISTRY_USER}
+    TPL_PUSH_REGISTRY_PASS: ${CI_REGISTRY_PASSWORD}
+    TPL_PUSH_REGISTRY_NAME: ${CI_REGISTRY}
+  script:
+    - docker pull ${TPL_PUSH_REGISTRY_NAME}/${TPL_OCI_IMAGE_NAME}:${TPL_OCI_IMAGE_TAG}
+    - docker run -d -p 80:3000 ${TPL_PUSH_REGISTRY_NAME}/${TPL_OCI_IMAGE_NAME}:${TPL_OCI_IMAGE_TAG}
+  stage: run_oci
+  only:
+    - develop 
+    - master
+
+.build_oci_image_pull_registry_kaniko:
+  image:
+    name: gcr.io/kaniko-project/executor:debug-v0.9.0
+    entrypoint: [""]
+  variables:
+    TPL_PUSH_REGISTRY_NAME: ""
+    TPL_PUSH_REGISTRY_USER: ""
+    TPL_PUSH_REGISTRY_PASS: ""
+    TPL_PULL_REGISTRY_NAME: ""
+    TPL_PULL_REGISTRY_USER: ""
+    TPL_PULL_REGISTRY_PASS: ""
+    TPL_DOCKERFILE_PATH: ""
+    TPL_CONTEXT_PATH: ""
+    TPL_OCI_IMAGE_NAME: ""
+    TPL_OCI_IMAGE_TAG: ""
+    TPL_EXTRA_OPTS: ""
+  script:
+    - if [ -z "$TPL_CONTEXT_PATH" ]; then TPL_CONTEXT_PATH=${TPL_DOCKERFILE_PATH}; fi
+    - echo "{
+        \"auths\":{
+          \"${TPL_PUSH_REGISTRY_NAME}\":{
+            \"username\":\"${TPL_PUSH_REGISTRY_USER}\",
+            \"password\":\"${TPL_PUSH_REGISTRY_PASS}\"
+          },
+          \"${TPL_PULL_REGISTRY_NAME}\":{
+            \"username\":\"${TPL_PULL_REGISTRY_USER}\",
+            \"password\":\"${TPL_PULL_REGISTRY_PASS}\"
+          }
+        }
+      }" > "/kaniko/.docker/config.json"
+    - cat "/kaniko/.docker/config.json"
+    - /kaniko/executor
+        ${TPL_EXTRA_OPTS}
+        --verbosity debug
+        --context ${TPL_CONTEXT_PATH}
+        --dockerfile ${TPL_DOCKERFILE_PATH}/Dockerfile
+        --destination ${TPL_PUSH_REGISTRY_NAME}/${TPL_OCI_IMAGE_NAME}:${TPL_OCI_IMAGE_TAG}   
+   
+   
+      
